@@ -1,0 +1,144 @@
+connection:
+  bootstrap_servers:
+    - "localhost:9092"
+  sasl:
+    mechanism: none
+    username: ""
+    password: ""
+  tls:
+    enabled: false
+    ca_cert_path: ""
+
+topics:
+  - name: orders
+    partitions: 6
+    replication_factor: 1
+    config:
+      retention.ms: "3600000"
+
+  - name: payments
+    partitions: 3
+    replication_factor: 1
+
+  - name: notifications
+    partitions: 12
+    replication_factor: 1
+
+producers:
+  - id: orders-producer
+    topic: orders
+    rate: 50
+    burst:
+      enabled: true
+      every_seconds: 60
+      multiplier: 5.0
+      duration_seconds: 10
+    message:
+      format: json
+      template: |
+        {
+          "order_id": "{{uuid}}",
+          "customer_id": "{{int 1000 9999}}",
+          "amount": {{float 5.0 500.0}},
+          "status": "{{choice pending processing shipped}}",
+          "created_at": "{{iso_now}}"
+        }
+      key_strategy: field
+      key_field: customer_id
+
+  - id: payments-producer
+    topic: payments
+    rate: 20
+    message:
+      format: json
+      template: |
+        {
+          "payment_id": "{{uuid}}",
+          "order_id": "{{uuid}}",
+          "amount": {{float 5.0 500.0}},
+          "method": "{{choice card wire crypto}}"
+        }
+      key_strategy: random
+
+  - id: notifications-producer
+    topic: notifications
+    rate: 200
+    message:
+      format: string
+      value: "User {{int 1 10000}} — event {{choice login logout purchase}}"
+      key_strategy: none
+
+consumer_groups:
+  - id: order-processor
+    topics: [orders]
+    members: 3
+    behavior:
+      type: normal
+      processing_ms: 10
+      commit_every: 100
+
+  - id: payment-validator
+    topics: [payments]
+    members: 2
+    behavior:
+      type: slow
+      processing_ms: 800
+      commit_every: 1
+
+  - id: notification-sender
+    topics: [notifications]
+    members: 6
+    behavior:
+      type: normal
+      processing_ms: 2
+      commit_every: 500
+
+  - id: audit-logger
+    topics: [orders, payments]
+    members: 1
+    behavior:
+      type: intermittent
+      processing_ms: 50
+      sleep_every_seconds: 30
+      sleep_duration_seconds: 15
+
+scenarios:
+  - name: "Lagging consumer recovery"
+    steps:
+      - at_seconds: 0
+        action: start_all
+
+      - at_seconds: 60
+        action: set_behavior
+        target: payment-validator
+        behavior:
+          type: lagging
+          processing_ms: 5000
+
+      - at_seconds: 180
+        action: set_behavior
+        target: payment-validator
+        behavior:
+          type: normal
+          processing_ms: 50
+
+      - at_seconds: 300
+        action: stop_all
+
+  - name: "Rebalance storm"
+    steps:
+      - at_seconds: 0
+        action: start_all
+
+      - at_seconds: 30
+        action: add_members
+        target: order-processor
+        count: 5
+
+      - at_seconds: 45
+        action: remove_members
+        target: order-processor
+        count: 7
+
+      - at_seconds: 300
+        action: stop_all
