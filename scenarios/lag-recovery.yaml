@@ -1,0 +1,57 @@
+connection:
+  bootstrap_servers:
+    - "localhost:9092"
+  sasl:
+    mechanism: none
+    username: ""
+    password: ""
+  tls:
+    enabled: false
+    ca_cert_path: ""
+
+topics:
+  - name: payments
+    partitions: 3
+    replication_factor: 1
+
+producers:
+  - id: payments-producer
+    topic: payments
+    rate: 50
+    message:
+      format: json
+      template: |
+        {"payment_id": "{{uuid}}", "amount": {{float 5.0 500.0}}, "ts": "{{iso_now}}"}
+      key_strategy: random
+
+consumer_groups:
+  - id: payment-validator
+    topics: [payments]
+    members: 2
+    behavior:
+      type: normal
+      processing_ms: 10
+      commit_every: 1
+
+scenarios:
+  - name: "Lagging consumer recovery"
+    steps:
+      - at_seconds: 0
+        action: start_all
+
+      - at_seconds: 60
+        action: set_behavior
+        target: payment-validator
+        behavior:
+          type: lagging
+          processing_ms: 5000
+
+      - at_seconds: 180
+        action: set_behavior
+        target: payment-validator
+        behavior:
+          type: normal
+          processing_ms: 50
+
+      - at_seconds: 300
+        action: stop_all
